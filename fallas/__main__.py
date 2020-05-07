@@ -4,31 +4,6 @@ import numpy as np
 import random
 from distutils.util import strtobool
 
-# def get_timings(beat, max_length, rand_beat):
-def get_timings(beat, max_length):
-    """A function to return a list of note timings.
-
-    Args:
-        - beat (int): beat length value of a 'quarter note' at 120bpm,
-            480 represents a 'regular' quarter note
-        - max_length (int): the maximum number of 'beats' as defined above of
-            the entire phrase. phrase may be shorter.
-        - rand_beat (bool): should the beats be randon (True), or uniform
-            (False)?
-
-    Returns:
-        - timings (list): a list of note durations
-    """
-    BEATS = [int(beat/4),
-             int(beat/2),
-             int(beat),
-             int(beat*2),
-             int(beat*4)]
-
-    total_steps = beat * max_length
-    timings = [beat] * max_length
-    return timings
-
 
 def build_beat(beat, max_length, save_path):
     """A function to create a single track midi object.
@@ -52,18 +27,17 @@ def build_beat(beat, max_length, save_path):
     track = MidiTrack()
     mid.tracks.append(track)
 
-    timings = get_timings(beat, max_length)
-
     # temp vars
+    timings = [beat] * max_length
     note = MIDI_MAP['kick']
     velocity = 100
 
     t = 0
     for timing in timings:
         track.append(Message('note_on', note=note,
-                             velocity=velocity, time=t))
+                             velocity=velocity, time=0))
         track.append(Message('note_off', note=note,
-                             velocity=velocity, time=timing+t))
+                             velocity=velocity, time=timing+0))
 
         t += timing
 
@@ -93,9 +67,7 @@ if __name__ == "__main__":
     # parser.add_argument("-tracks", nargs='?', default=1,
     #                     help="The number of 'voices' (as separate tracks) in\
     #                     the output files.")
-    #
 
-    #
     # parser.add_argument("-rand_beat", nargs='?', default=True,
     #                     help="Should the beats be random (True), or should they\
     #                     be constant (False)?")
@@ -108,8 +80,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # we'll hardcode ableton drum rack mappings for now
     global MIDI_MAP
-
     MIDI_MAP = {
         'kick':36,
         'snare':37,
@@ -128,7 +100,6 @@ if __name__ == "__main__":
     # VELOCITY = int(args.vel)
     # RESTS = args.rests
     # RAND_BEAT = args.rand_beat
-
 
     # print("INPUT PARAMETERS:")
     # print(f'Velocity: {VELOCITY}')
