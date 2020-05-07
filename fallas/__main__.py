@@ -15,11 +15,6 @@ def build_beat(beat, max_length, save_path):
             480 represents a 'regular' quarter note.
         - max_length (int): the maximum number of 'beats' as defined above of
             the entire phrase. phrase may be shorter.
-        - rand_beat (bool): should the beats be randon (True), or uniform
-            (False)?
-        - velocity (int): velocity of the midi notes
-        - rests (bool): if true output will contain random offsets in note
-            start position
         - save_path (str): what to name the file
     """
     # (synchronous): all tracks start at the same time
