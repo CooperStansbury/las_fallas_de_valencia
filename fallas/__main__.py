@@ -1,4 +1,5 @@
 import argparse
+import ast
 from mido import Message, MidiFile, MidiTrack
 import numpy as np
 import random
@@ -11,7 +12,57 @@ TODO:
     - create subtractive/additive hit logic
 """
 
-def get_division(beat, n_beats, hit_division):
+def get_base_params(midi, division, offset, base_velocity):
+    """A function to ensure that minimal functionality is in all drum
+    params.
+
+    Args:
+        - midi (int): the note that the drum will trigger. Defaults set
+            to trigger bottom row of default drum rack in Ableton.
+        - division (int): how to divide the phrase for this drum hit
+        - offset (int): number of beats (`beat` param) to shift the drum phrase
+        - base_velocity (int): the default velocity for the drum hit
+
+    Returns:
+        - base_params (dict)
+    """
+    return {
+        'midi':midi,
+        'division':division,
+        'offset':offset,
+        'base_velocity':base_velocity
+    }
+
+
+def update_drum_params(input_args, default_params):
+    """A function to handle user input to a specific drum hit.
+
+    Args:
+        - input_args (string): passed from argparser, handled here.
+        - default_params (dict): the default parameters
+
+    Returns:
+        - drum_params (dict): updated dictionary of parameters.
+    """
+    try:
+        as_dict = ast.literal_eval(str(input_args))
+    except ValueError:
+        base_params = get_base_params(0, 0, 0, 0)
+        print(f'The input string: `{input_args}` is not in the right format.')
+        print('The input and each key should be enclosed in quotes.')
+        print('Heres an example:')
+        example = """ -kick "{'division':2}" """
+        print('\t', example)
+        print('Poissible parameters are: ')
+        [print('\t', k) for k in base_params.keys()]
+
+    for k, v in as_dict.items():
+        default_params[k] = v
+    return default_params
+
+
+
+def get_division(beat, n_beats, hit_division, offset):
     """A fucntion to get a beat division pf the phrase length.
 
     Args:
@@ -24,15 +75,25 @@ def get_division(beat, n_beats, hit_division):
     Returns:
         - timings (list of int): a list of evenly space note durations (lengths)
     """
-    phrase_length = beat * n_beats
-    hit_length = int(phrase_length/hit_division)
-    n_hits = int(phrase_length/hit_length)
-    timings = [hit_length] * n_hits
+    BEAT_OFFSET = beat * offset
+
+    # compute beat divisions
+    phrase_length = int(beat * n_beats)
+    hit_length = int(phrase_length / hit_division)
+    n_hits = int(phrase_length / hit_length)
+    timings = [hit_length] * int(n_hits)
+
+    #always assume we should hit on beat 1 (t=0)
+    timings = [BEAT_OFFSET] + timings
+
+    # strip 'extra' hits
+    extra_hits = np.argwhere(np.cumsum(timings) > phrase_length)
+    [timings.pop(i[0]) for i in extra_hits]
+
     return timings
 
 
-
-def build_beat(beat, n_beats, velocity, divisions, offsets, save_path):
+def build_beat(beat, n_beats, drums, save_path):
     """A function to create a single track midi object.
 
     Default is 120bpm.
@@ -42,32 +103,22 @@ def build_beat(beat, n_beats, velocity, divisions, offsets, save_path):
             480 represents a 'regular' quarter note.
         - n_beats (int): the maximum number of 'beats' as defined above of
             the entire phrase. phrase may be shorter.
-        - velocity (int): velocity of the midi notes
-        - divisions (dict): specific beat divisions for each hit
-        - offsets (dict): specific beat offsets for each hit
+        - drums (list of dict): the list of different drum parameters.
         - save_path (str): what to name the file
     """
     # (synchronous): all tracks start at the same time
     mid = MidiFile(type=1)
 
-    for hit, div in divisions.items():
+    for hit in drums:
 
         track = MidiTrack()
         mid.tracks.append(track)
 
-        note = MIDI_MAP[hit]
-        timings = get_division(beat=BEAT, n_beats=N_BEATS, hit_division=div)
+        note = hit['midi']
+        timings = get_division(beat=BEAT, n_beats=N_BEATS,
+                               hit_division=hit['division'], offset=hit['offset'])
 
-        # offset = offsets[hit]
-        # # alter timings based on offset
-        # timings[0] += offset
-        # timings[len(timings)-1] -= offset
-
-        intial_hit = 0
-        if offsets[hit]:
-            intial_hit = timings[0]
-            timings = timings[:-1] # all but last hit
-
+        velocity = hit['base_velocity']
 
         for t in timings:
             track.append(Message('note_on',
@@ -79,46 +130,9 @@ def build_beat(beat, n_beats, velocity, divisions, offsets, save_path):
                                 note=note,
                                 channel=0,
                                 velocity=velocity,
-                                time=div))
-    mid.save(save_path)
+                                time=0))
 
-    # track = MidiTrack()
-    # mid.tracks.append(track)
-    #
-    # kick = MIDI_MAP['kick']
-    # snare = MIDI_MAP['snare']
-    #
-    # t = 0
-    # for timing in phrase_length:
-    #
-    #     track.append(Message('note_on',
-    #                         note=kick,
-    #                         channel=0,
-    #                         velocity=velocity,
-    #                         time=0))
-    #
-    #     track.append(Message('note_on',
-    #                         note=snare,
-    #                         channel=1,
-    #                         velocity=velocity,
-    #                         time=0))
-    #
-    #     track.append(Message('note_off',
-    #                         note=kick,
-    #                         channel=0,
-    #                         velocity=velocity,
-    #                         time=beat))
-    #
-    #     track.append(Message('note_off',
-    #                         note=snare,
-    #                         channel=1,
-    #                         velocity=velocity,
-    #                         time=0))
-    #
-    #     t += timing
-    #
-    #
-    # mid.save(save_path)
+    mid.save(save_path)
 
 
 if __name__ == "__main__":
@@ -140,19 +154,24 @@ if __name__ == "__main__":
                         help="The maximum number of 'beats' from the `beat`\
                         parameter of the entire phrase. Phrase may be shorter.")
 
+    parser.add_argument("-kick", nargs='?', default=None,
+                        help="The kick parameters. Expects a dictionary input:\
+                        {'division':2, 'offset':4}.")
+
+    parser.add_argument("-snare", nargs='?', default=None,
+                        help="The snare parameters. Expects a dictionary input:\
+                        {'division':2, 'offset':4}.")
+
+    parser.add_argument("-hh1", nargs='?', default=None,
+                        help="The hi-hit (1) parameters. Expects a dictionary input:\
+                        {'division':2, 'offset':4}.")
+
+    parser.add_argument("-hh2", nargs='?', default=None,
+                        help="The hi-hit (2) parameters. Expects a dictionary input:\
+                        {'division':2, 'offset':4}.")
+
     parser.add_argument("-vel", nargs='?', default=100,
                         help="Velocity of the notes.")
-
-    # parser.add_argument("-tracks", nargs='?', default=1,
-    #                     help="The number of 'voices' (as separate tracks) in\
-    #                     the output files.")
-
-    # parser.add_argument("-rand_beat", nargs='?', default=True,
-    #                     help="Should the beats be random (True), or should they\
-    #                     be constant (False)?")
-
-    # parser.add_argument("-rests", nargs='?', default=False,
-    #                     help="Should the output contain random rests?")
 
     args = parser.parse_args()
 
@@ -163,47 +182,58 @@ if __name__ == "__main__":
     N_BEATS = int(args.n_beats)
     VELOCITY = int(args.vel)
 
-    # we'll hardcode ableton drum rack mappings for now
-    global MIDI_MAP
-    MIDI_MAP = {
-        'kick':36,
-        'snare':37,
-        'hh1':38,
-        'hh2':39,
-    }
+    ######## KICK
+    KICK = get_base_params(midi=36,
+                           division=8,
+                           offset=0,
+                           base_velocity=100)
 
-    DIVISIONS = {
-        'kick':4,
-        'snare':4,
-        'hh1':8,
-        'hh2':16
-    }
+    if not args.kick is None:
+        KICK = update_drum_params(str(args.kick), KICK)
 
-    OFFSETS = {
-        'kick':False,
-        'snare':True,
-        'hh1':False,
-        'hh2':False
-    }
+    ######## SNARE
+    SNARE = get_base_params(midi=37,
+                            division=4,
+                            offset=1,
+                            base_velocity=100)
 
+    if not args.snare is None:
+        SNARE = update_drum_params(str(args.snare), SNARE)
 
-    # TRACKS = int(args.tracks)
-    # RESTS = args.rests
-    # RAND_BEAT = args.rand_beat
+    ######## HH1
+    HH1 = get_base_params(midi=38,
+                          division=16,
+                          offset=0,
+                          base_velocity=100)
+
+    if not args.hh1 is None:
+        HH1 = update_drum_params(str(args.hh1), HH1)
+
+    ######## HH2
+    HH2 = get_base_params(midi=39,
+                          division=32,
+                          offset=0,
+                          base_velocity=100)
+
+    if not args.hh2 is None:
+        HH2 = update_drum_params(str(args.hh2), HH2)
+
+    ######## Full drum set
+    DRUMSET = [KICK, SNARE, HH1, HH2]
 
     print("INPUT PARAMETERS:")
     print(f'Beat: {BEAT}')
     print(f'Phrase Length (in beats): {N_BEATS}')
-    print(f'Velocity: {VELOCITY}')
-    # print(f'Random Beats: {RAND_BEAT}')
-    # print(f'Tracks: {TRACKS}')
-    # print(f'Rests Enabled: {RESTS}')
-
-
+    print(f'Kick Params:')
+    [print(f'\t{k}:{v}') for k,v in KICK.items()]
+    print(f'Snare Params:')
+    [print(f'\t{k}:{v}') for k,v in SNARE.items()]
+    print(f'Hi-Hat 1 Params:')
+    [print(f'\t{k}:{v}') for k,v in HH1.items()]
+    print(f'Hi-Hat 2 Params:')
+    [print(f'\t{k}:{v}') for k,v in HH2.items()]
+    
     for i in range(N):
         save_path = f'{OUTPUT_PATH}TEST_{i}.mid'
-        build_beat(beat=BEAT, n_beats=N_BEATS, divisions=DIVISIONS,
-                   offsets=OFFSETS, velocity=VELOCITY,save_path=save_path)
-
-        # build_beat(beat=BEAT,max_length=MAX_LENGTH, rand_beat=RAND_BEAT,
-        #       velocity=VELOCITY,rests=RESTS,save_path=save_path)
+        build_beat(beat=BEAT, n_beats=N_BEATS, drums=DRUMSET,
+                   save_path=save_path)
