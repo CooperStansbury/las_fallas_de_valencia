@@ -8,8 +8,11 @@ from distutils.util import strtobool
 
 """
 TODO:
+    - create subtractive/additive hit logic (0=empty, 1=full, 0.5 is default)
+    - add global control commands (things that affect all drums)
+    - add a 'repeater' command?
     - add a tunable velocity curve (per track or global or both?)
-    - create subtractive/additive hit logic
+    - swing/shuffle params?
 """
 
 def get_base_params(midi, division, offset, base_velocity):
@@ -28,9 +31,9 @@ def get_base_params(midi, division, offset, base_velocity):
     """
     return {
         'midi':midi,
-        'division':division,
-        'offset':offset,
-        'base_velocity':base_velocity
+        'div':division,
+        'off':offset,
+        'vel':base_velocity
     }
 
 
@@ -55,15 +58,18 @@ def update_drum_params(input_args, default_params):
         print('\t', example)
         print('Poissible parameters are: ')
         [print('\t', k) for k in base_params.keys()]
+    except Exception as e:
+        print(e)
 
     for k, v in as_dict.items():
-        default_params[k] = v
+        if k in default_params:
+            default_params[k] = v
     return default_params
 
 
 
-def get_division(beat, n_beats, hit_division, offset):
-    """A fucntion to get a beat division pf the phrase length.
+def get_division(beat, n_beats, hit_division, offset, reps):
+    """A fucntion to get a beat division of the phrase length.
 
     Args:
         - beat (int): the number of timesteps of a default quarter note. 480
@@ -71,29 +77,34 @@ def get_division(beat, n_beats, hit_division, offset):
         - n_beats (int): number of beats in the phrase
         - hit_division (float): the number evenly distributed hits to place in
             the phrase
+        - offset (int): how many beats to offset the timings
+        - reps (int): how many copies of the phrase to make
 
     Returns:
         - timings (list of int): a list of evenly space note durations (lengths)
     """
-    BEAT_OFFSET = beat * offset
+    BEAT_OFFSET = int(beat * offset)
 
     # compute beat divisions
     phrase_length = int(beat * n_beats)
     hit_length = int(phrase_length / hit_division)
-    n_hits = int(phrase_length / hit_length)
+    n_hits = int(phrase_length / hit_length) * int(reps)
     timings = [hit_length] * int(n_hits)
 
     #always assume we should hit on beat 1 (t=0)
     timings = [BEAT_OFFSET] + timings
 
-    # strip 'extra' hits
-    extra_hits = np.argwhere(np.cumsum(timings) > phrase_length)
-    [timings.pop(i[0]) for i in extra_hits]
+    # strip 'extra' hits (those that fall beyond the phrase length)
+    extra_hits = np.argwhere(np.cumsum(timings) > int(phrase_length*reps)).ravel()
+
+    if len(extra_hits) != 0:
+        all_to_end = np.min(extra_hits)
+        del timings[all_to_end:]
 
     return timings
 
 
-def build_beat(beat, n_beats, drums, save_path):
+def build_beat(beat, n_beats, reps, drums, save_path):
     """A function to create a single track midi object.
 
     Default is 120bpm.
@@ -103,6 +114,7 @@ def build_beat(beat, n_beats, drums, save_path):
             480 represents a 'regular' quarter note.
         - n_beats (int): the maximum number of 'beats' as defined above of
             the entire phrase. phrase may be shorter.
+        - reps (int): how many copies of the phrase to make
         - drums (list of dict): the list of different drum parameters.
         - save_path (str): what to name the file
     """
@@ -110,15 +122,17 @@ def build_beat(beat, n_beats, drums, save_path):
     mid = MidiFile(type=1)
 
     for hit in drums:
-
         track = MidiTrack()
         mid.tracks.append(track)
 
         note = hit['midi']
-        timings = get_division(beat=BEAT, n_beats=N_BEATS,
-                               hit_division=hit['division'], offset=hit['offset'])
+        timings = get_division(beat=BEAT,
+                               n_beats=N_BEATS,
+                               hit_division=hit['div'],
+                               offset=hit['off'],
+                               reps=reps)
 
-        velocity = hit['base_velocity']
+        velocity = hit['vel']
 
         for t in timings:
             track.append(Message('note_on',
@@ -154,6 +168,9 @@ if __name__ == "__main__":
                         help="The maximum number of 'beats' from the `beat`\
                         parameter of the entire phrase. Phrase may be shorter.")
 
+    parser.add_argument("-reps", nargs='?', default=1,
+                        help="How many copies of the phrase to make.")
+
     parser.add_argument("-kick", nargs='?', default=None,
                         help="The kick parameters. Expects a dictionary input:\
                         {'division':2, 'offset':4}.")
@@ -175,12 +192,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # argumnent variables
-    N = int(args.n)
+    # input variables
+    N = args.n
     OUTPUT_PATH = args.output
-    BEAT = int(args.beat)
-    N_BEATS = int(args.n_beats)
-    VELOCITY = int(args.vel)
+    BEAT = args.beat
+    N_BEATS = args.n_beats
+    REPS = args.reps
+    VELOCITY = args.vel
 
     ######## KICK
     KICK = get_base_params(midi=36,
@@ -232,8 +250,8 @@ if __name__ == "__main__":
     [print(f'\t{k}:{v}') for k,v in HH1.items()]
     print(f'Hi-Hat 2 Params:')
     [print(f'\t{k}:{v}') for k,v in HH2.items()]
-    
-    for i in range(N):
+
+    for i in range(int(N)):
         save_path = f'{OUTPUT_PATH}TEST_{i}.mid'
-        build_beat(beat=BEAT, n_beats=N_BEATS, drums=DRUMSET,
+        build_beat(beat=BEAT, n_beats=N_BEATS, reps=REPS, drums=DRUMSET,
                    save_path=save_path)
