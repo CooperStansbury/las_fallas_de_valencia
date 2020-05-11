@@ -8,14 +8,15 @@ from distutils.util import strtobool
 
 """
 TODO:
-    - create subtractive/additive hit logic (0=empty, 1=full, 0.5 is default)
+    - additive hit logic
     - add global control commands (things that affect all drums)
     - add a 'repeater' command?
     - add a tunable velocity curve (per track or global or both?)
     - swing/shuffle params?
 """
 
-def get_base_params(midi, division, offset, base_velocity):
+def get_base_params(midi, division, offset, remove, base_velocity,
+                    probibility_add, depth_add, repeater):
     """A function to ensure that minimal functionality is in all drum
     params.
 
@@ -24,7 +25,15 @@ def get_base_params(midi, division, offset, base_velocity):
             to trigger bottom row of default drum rack in Ableton.
         - division (int): how to divide the phrase for this drum hit
         - offset (int): number of beats (`beat` param) to shift the drum phrase
+        - remove (float): the proportion of total hits that are removed (with)
+            uniform distribution
         - base_velocity (int): the default velocity for the drum hit
+        - probibility_add (float): the probability that given drum strike is
+            used to trigger a new drum strike
+        - depth_add (int): the granularity of the new strikes. Higher == closer
+            together
+        - repeater (int): hardly knower. the lamba value in the Poisson
+            distribution that determines how many new stikes will be added
 
     Returns:
         - base_params (dict)
@@ -33,7 +42,11 @@ def get_base_params(midi, division, offset, base_velocity):
         'midi':midi,
         'div':division,
         'off':offset,
-        'vel':base_velocity
+        'rem':remove,
+        'vel':base_velocity,
+        'px_add':probibility_add,
+        'depth': depth_add,
+        'rep':repeater
     }
 
 
@@ -54,7 +67,7 @@ def update_drum_params(input_args, default_params):
         print(f'The input string: `{input_args}` is not in the right format.')
         print('The input and each key should be enclosed in quotes.')
         print('Heres an example:')
-        example = """ -kick "{'division':2}" """
+        example = """ -kick "{'div':2}" """
         print('\t', example)
         print('Poissible parameters are: ')
         [print('\t', k) for k in base_params.keys()]
@@ -67,8 +80,7 @@ def update_drum_params(input_args, default_params):
     return default_params
 
 
-
-def get_division(beat, n_beats, hit_division, offset, reps):
+def get_division(beat, n_beats, hit_division, offset):
     """A fucntion to get a beat division of the phrase length.
 
     Args:
@@ -78,7 +90,6 @@ def get_division(beat, n_beats, hit_division, offset, reps):
         - hit_division (float): the number evenly distributed hits to place in
             the phrase
         - offset (int): how many beats to offset the timings
-        - reps (int): how many copies of the phrase to make
 
     Returns:
         - timings (list of int): a list of evenly space note durations (lengths)
@@ -88,14 +99,26 @@ def get_division(beat, n_beats, hit_division, offset, reps):
     # compute beat divisions
     phrase_length = int(beat * n_beats)
     hit_length = int(phrase_length / hit_division)
-    n_hits = int(phrase_length / hit_length) * int(reps)
+    n_hits = int(phrase_length / hit_length)
     timings = [hit_length] * int(n_hits)
 
     #always assume we should hit on beat 1 (t=0)
     timings = [BEAT_OFFSET] + timings
 
-    # strip 'extra' hits (those that fall beyond the phrase length)
-    extra_hits = np.argwhere(np.cumsum(timings) > int(phrase_length*reps)).ravel()
+    return timings
+
+
+def trim_timings(phrase_length, timings):
+    """A function to remove beats that fall beyond the the bounds of the phrase
+
+    Args:
+        - phrase_length (int): the length of the phrase
+        - timings (list of int): a list of evenly space note durations (lengths)
+
+    Returns:
+        - timings (list of int): updated list
+    """
+    extra_hits = np.argwhere(np.cumsum(timings) > int(phrase_length)).ravel()
 
     if len(extra_hits) != 0:
         all_to_end = np.min(extra_hits)
@@ -104,7 +127,66 @@ def get_division(beat, n_beats, hit_division, offset, reps):
     return timings
 
 
-def build_beat(beat, n_beats, reps, drums, save_path):
+def beat_stripper(timings, removal_proportion):
+    """A function to remove a proportion of the total number of hits based
+    on uniform probability of removal.
+
+    Args:
+        - timings (list of int): a list of evenly space note durations (lengths)
+        - removal_proportion (float): the proportion of items to remove (1=all)
+
+    Returns:
+        - timings (list of int): updated list
+    """
+    phrase_len = len(timings)
+    n_to_rm = int(phrase_len * removal_proportion)
+    rm_idx = np.random.randint(0, phrase_len-1, n_to_rm)
+
+    timings_stripped = []
+    for i, hit in enumerate(timings):
+        if not i in rm_idx:
+            timings_stripped.append(hit)
+        else:
+            timings_stripped.append(hit + hit)
+    return timings_stripped
+
+
+def beat_perturber(beat, timings, probibility_add, depth, repeater):
+    """A function to change a beat timing pattern (additively)
+
+    Args:
+        - timings (list of int): a list of evenly space note durations (lengths)
+        - change_prob (float): the probaility that a hit is used as trigger/root
+            for a new hit
+        - depth (int): the number of integer divisions of `BEAT` that are
+            possible note position offsets (smaller means possible to clump)
+        - repeater (int): the lambda in the poisson distribition use to
+            determine how many new hits are added (w/ constant timings)
+
+    Returns:
+        - timings (list of int): updated list
+    """
+    # the possibilities
+    perturbances = []
+
+    for i in range(2, depth+2):
+        perturbances.append(int(beat / i))
+
+    # roll a Gaussian distributition for every
+    # current drum hit, perturb those below the probability threshold
+    px_vec = np.random.random(len(timings)-1)
+    indices_to_perturb = np.argwhere(px_vec < probibility_add).ravel()
+
+    for idx in indices_to_perturb:
+        # randomly sample from the 'perturbenaces'
+        random_perturb = np.random.choice(perturbances, 1)[0]
+        n_reps = np.random.poisson(repeater)
+        timings = timings[0:idx] + ([random_perturb] * n_reps) + timings[idx:]
+
+    return timings
+
+
+def build_beat(beat, n_beats, drums, save_path):
     """A function to create a single track midi object.
 
     Default is 120bpm.
@@ -114,10 +196,10 @@ def build_beat(beat, n_beats, reps, drums, save_path):
             480 represents a 'regular' quarter note.
         - n_beats (int): the maximum number of 'beats' as defined above of
             the entire phrase. phrase may be shorter.
-        - reps (int): how many copies of the phrase to make
         - drums (list of dict): the list of different drum parameters.
         - save_path (str): what to name the file
     """
+    phrase_length = int(beat * n_beats)
     # (synchronous): all tracks start at the same time
     mid = MidiFile(type=1)
 
@@ -129,9 +211,20 @@ def build_beat(beat, n_beats, reps, drums, save_path):
         timings = get_division(beat=BEAT,
                                n_beats=N_BEATS,
                                hit_division=hit['div'],
-                               offset=hit['off'],
-                               reps=reps)
+                               offset=hit['off'])
 
+        # random removal logic
+        timings = beat_stripper(timings=timings, removal_proportion=hit['rem'])
+
+        # add hits
+        timings = beat_perturber(beat=beat, timings=timings,
+                                 probibility_add=hit['px_add'],
+                                 depth=hit['depth'],
+                                 repeater=hit['rep'])
+
+        timings = trim_timings(phrase_length=phrase_length, timings=timings)
+
+        # STUBBED for fun Fourier velcoity profiles
         velocity = hit['vel']
 
         for t in timings:
@@ -168,24 +261,21 @@ if __name__ == "__main__":
                         help="The maximum number of 'beats' from the `beat`\
                         parameter of the entire phrase. Phrase may be shorter.")
 
-    parser.add_argument("-reps", nargs='?', default=1,
-                        help="How many copies of the phrase to make.")
-
     parser.add_argument("-kick", nargs='?', default=None,
                         help="The kick parameters. Expects a dictionary input:\
-                        {'division':2, 'offset':4}.")
+                        {'div':2, 'offset':4}.")
 
     parser.add_argument("-snare", nargs='?', default=None,
                         help="The snare parameters. Expects a dictionary input:\
-                        {'division':2, 'offset':4}.")
+                        {'div':2, 'offset':4}.")
 
     parser.add_argument("-hh1", nargs='?', default=None,
                         help="The hi-hit (1) parameters. Expects a dictionary input:\
-                        {'division':2, 'offset':4}.")
+                        {'div':2, 'offset':4}.")
 
     parser.add_argument("-hh2", nargs='?', default=None,
                         help="The hi-hit (2) parameters. Expects a dictionary input:\
-                        {'division':2, 'offset':4}.")
+                        {'div':2, 'offset':4}.")
 
     parser.add_argument("-vel", nargs='?', default=100,
                         help="Velocity of the notes.")
@@ -197,14 +287,17 @@ if __name__ == "__main__":
     OUTPUT_PATH = args.output
     BEAT = args.beat
     N_BEATS = args.n_beats
-    REPS = args.reps
     VELOCITY = args.vel
 
     ######## KICK
     KICK = get_base_params(midi=36,
                            division=8,
                            offset=0,
-                           base_velocity=100)
+                           remove=0,
+                           base_velocity=100,
+                           probibility_add=.1,
+                           depth_add=2,
+                           repeater=1)
 
     if not args.kick is None:
         KICK = update_drum_params(str(args.kick), KICK)
@@ -212,17 +305,25 @@ if __name__ == "__main__":
     ######## SNARE
     SNARE = get_base_params(midi=37,
                             division=4,
-                            offset=1,
-                            base_velocity=100)
+                            offset=2,
+                            remove=0,
+                            base_velocity=100,
+                            probibility_add=0,
+                            depth_add=0,
+                            repeater=0)
 
     if not args.snare is None:
         SNARE = update_drum_params(str(args.snare), SNARE)
 
     ######## HH1
     HH1 = get_base_params(midi=38,
-                          division=16,
+                          division=8,
                           offset=0,
-                          base_velocity=100)
+                          remove=.7,
+                          base_velocity=100,
+                          probibility_add=.3,
+                          depth_add=3,
+                          repeater=4)
 
     if not args.hh1 is None:
         HH1 = update_drum_params(str(args.hh1), HH1)
@@ -231,7 +332,11 @@ if __name__ == "__main__":
     HH2 = get_base_params(midi=39,
                           division=32,
                           offset=0,
-                          base_velocity=100)
+                          remove=.25,
+                          base_velocity=100,
+                          probibility_add=.1,
+                          depth_add=2,
+                          repeater=6)
 
     if not args.hh2 is None:
         HH2 = update_drum_params(str(args.hh2), HH2)
@@ -253,5 +358,5 @@ if __name__ == "__main__":
 
     for i in range(int(N)):
         save_path = f'{OUTPUT_PATH}TEST_{i}.mid'
-        build_beat(beat=BEAT, n_beats=N_BEATS, reps=REPS, drums=DRUMSET,
+        build_beat(beat=BEAT, n_beats=N_BEATS, drums=DRUMSET,
                    save_path=save_path)
